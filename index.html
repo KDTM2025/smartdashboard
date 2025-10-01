@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Akıllı Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* Koyu Gri Arka Plan */
+            color: #e5e7eb;
+        }
+        .pulse {
+            animation: pulse-animation 2s infinite;
+        }
+        @keyframes pulse-animation {
+            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+        .status-light {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            transition: background-color 0.3s ease;
+        }
+        .status-light.idle { background-color: #6b7280; } /* Gri */
+        .status-light.passive { background-color: #f59e0b; } /* Sarı */
+        .status-light.active { background-color: #22c55e; } /* Yeşil */
+        .loader {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #FFF;
+            border-bottom-color: transparent;
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 1s linear infinite;
+        }
+        @keyframes rotation {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-6 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <!-- Başlık ve Kontrol Paneli -->
+        <header class="flex flex-col sm:flex-row justify-between items-center mb-6 pb-4 border-b border-gray-700">
+            <h1 class="text-2xl sm:text-3xl font-bold text-white mb-4 sm:mb-0">
+                <i class="fas fa-brain mr-2"></i>AI Destekli Dashboard
+            </h1>
+            <div class="flex items-center space-x-4">
+                <div id="status-container" class="flex items-center space-x-2 bg-gray-800 px-3 py-2 rounded-lg">
+                    <div id="status-light" class="status-light idle"></div>
+                    <span id="status-text" class="text-sm font-medium text-gray-300">Beklemede</span>
+                </div>
+                <button id="listenBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 w-[180px]">
+                    <i class="fas fa-microphone-alt mr-2"></i>Dinlemeyi Başlat
+                </button>
+            </div>
+        </header>
+
+        <!-- Komut ve Cevap Görüntüleme Alanı -->
+        <div id="command-display" class="min-h-[60px] bg-gray-800 p-4 rounded-lg mb-6 text-gray-400 text-center italic text-sm flex items-center justify-center">
+            Komutlarınız burada görünecek...
+        </div>
+
+        <!-- Komut Satırı Girişi -->
+        <div id="cli-container" class="mb-6">
+            <form id="cli-form" class="relative flex items-center">
+                <span class="absolute left-3 text-green-400 font-mono select-none">&gt;</span>
+                <input type="text" id="cli-input" class="w-full bg-gray-900 border border-gray-700 text-green-400 font-mono rounded-lg focus:ring-blue-500 focus:border-blue-500 py-2 pl-8 pr-24" placeholder="Komutunuzu yazın ve Enter'a basın...">
+                <button type="submit" class="absolute right-2 bg-green-600 hover:bg-green-700 text-white font-bold py-1 px-3 rounded-md text-sm">Gönder</button>
+            </form>
+        </div>
+
+        <!-- Dashboard İçerik Alanı -->
+        <main id="dashboard-content" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+             <div id="welcome-message" class="md:col-span-2 lg:col-span-3 xl:col-span-4 text-center p-8 bg-gray-800 rounded-lg">
+                <i class="fas fa-info-circle fa-3x mb-4 text-blue-500"></i>
+                <h2 class="text-xl font-semibold mb-2">Dashboard'a Hoş Geldiniz</h2>
+                <p class="text-gray-400">Başlamak için "Dinlemeyi Başlat" butonuna basın veya komut satırına "açıl susam açıl" yazın.</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const listenBtn = document.getElementById('listenBtn');
+        const statusText = document.getElementById('status-text');
+        const statusLight = document.getElementById('status-light');
+        const commandDisplay = document.getElementById('command-display');
+        const dashboardContent = document.getElementById('dashboard-content');
+        const cliContainer = document.getElementById('cli-container');
+        const cliForm = document.getElementById('cli-form');
+        const cliInput = document.getElementById('cli-input');
+
+        let fullData = [];
+        let loadedCsvText = ''; // Dışarıdan yüklenen CSV metnini tutacak
+        let chartInstance = null;
+        let listeningMode = 'idle';
+        let isSpeaking = false;
+        let recognitionIsActive = false;
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = SpeechRecognition ? new SpeechRecognition() : null;
+        if (recognition) {
+            recognition.lang = 'tr-TR';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+        }
+        const synth = window.speechSynthesis;
+
+        function parseCSV(csv) {
+            const lines = csv.trim().split('\n');
+            const headers = lines[0].split(';'); // AYRAÇ VİRGÜLDEN NOKTALI VİRGÜLE DEĞİŞTİRİLDİ
+            const data = lines.slice(1).map(line => {
+                const values = line.split(';'); // AYRAÇ VİRGÜLDEN NOKTALI VİRGÜLE DEĞİŞTİRİLDİ
+                let obj = {};
+                headers.forEach((header, i) => {
+                    const cleanHeader = header.trim();
+                    obj[cleanHeader] = values[i] ? values[i].trim() : '';
+                });
+                return obj;
+            });
+            fullData = data;
+        }
+
+        function speak(text, callback) {
+            if (!text || text.trim() === '') {
+                if (callback) callback();
+                return;
+            }
+            if (synth.speaking) synth.cancel();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'tr-TR';
+            
+            isSpeaking = true;
+            if (recognitionIsActive) recognition.stop();
+
+            utterance.onend = () => {
+                isSpeaking = false;
+                if (listeningMode !== 'idle' && !recognitionIsActive) {
+                   try { recognition.start(); } catch(e) {}
+                }
+                if (callback) callback();
+            };
+
+            utterance.onerror = e => {
+                console.error('SpeechSynthesisUtterance.onerror', e);
+                isSpeaking = false;
+                 if (listeningMode !== 'idle' && !recognitionIsActive) {
+                   try { recognition.start(); } catch(e) {}
+                }
+                if (callback) callback();
+            };
+
+            synth.speak(utterance);
+        }
+
+        function updateStatus(mode, text) {
+            listeningMode = mode;
+            statusText.textContent = text;
+            statusLight.className = `status-light ${mode}`;
+            listenBtn.classList.toggle('pulse', mode === 'active');
+        }
+
+        if (recognition) {
+            listenBtn.addEventListener('click', () => {
+                if (listeningMode === 'idle') {
+                    try {
+                        recognition.start();
+                        updateStatus('passive', 'Pasif Dinleme');
+                        listenBtn.innerHTML = '<i class="fas fa-stop-circle mr-2"></i>Dinlemeyi Durdur';
+                        listenBtn.classList.replace('bg-blue-600', 'bg-red-600');
+                        listenBtn.classList.replace('hover:bg-blue-700', 'hover:bg-red-700');
+                        speak('Dinleme başlatıldı.');
+                    } catch(e) { console.error("Recognition could not be started.", e); }
+                } else {
+                    listeningMode = 'idle'; // Set state before aborting
+                    if(recognitionIsActive) recognition.abort();
+                    if (synth.speaking) synth.cancel();
+                    isSpeaking = false;
+                    updateStatus('idle', 'Beklemede');
+                    listenBtn.innerHTML = '<i class="fas fa-microphone-alt mr-2"></i>Dinlemeyi Başlat';
+                    listenBtn.classList.replace('bg-red-600', 'bg-blue-600');
+                    listenBtn.classList.replace('hover:bg-red-700', 'hover:bg-blue-700');
+                }
+            });
+
+            recognition.onstart = () => { recognitionIsActive = true; };
+            recognition.onend = () => {
+                recognitionIsActive = false;
+                if (!isSpeaking && listeningMode !== 'idle') {
+                    try { recognition.start(); } catch(e) {}
+                }
+            };
+            recognition.onerror = e => console.error("Speech recognition error", e.error);
+            recognition.onresult = event => {
+                const transcript = event.results[event.results.length - 1][0].transcript.trim().toLowerCase();
+                commandDisplay.innerHTML = `<span class="text-gray-500">Siz (sesli):</span> <span class="text-white font-medium">"${transcript}"</span>`;
+                handleCommand(transcript);
+            };
+
+        } else {
+            listenBtn.disabled = true;
+            listenBtn.innerHTML = "Tarayıcı Desteklemiyor";
+            updateStatus('idle', 'Desteklenmiyor');
+        }
+        
+        cliForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const command = cliInput.value.trim().toLowerCase();
+            if (command) {
+                commandDisplay.innerHTML = `<span class="text-gray-500">Siz (yazılı):</span> <span class="text-white font-medium">"${command}"</span>`;
+                handleCommand(command);
+                cliInput.value = '';
+            }
+        });
+
+        function handleCommand(command) {
+            if (command.includes('açıl susam açıl')) {
+                if (listeningMode !== 'active') {
+                    updateStatus('active', 'Akıllı Dinleme Aktif');
+                    speak('Akıllı dinleme modu aktif. Artık isteklerinizi yazabilir veya söyleyebilirsiniz.');
+                }
+                return;
+            }
+
+            if (listeningMode === 'active') {
+                if (command.includes('kapan susam kapan')) {
+                    updateStatus('passive', 'Pasif Dinleme');
+                    speak('Akıllı dinleme modu kapatıldı.');
+                } else {
+                    processAIRequest(command);
+                }
+            } else {
+                speak("Lütfen önce 'açıl susam açıl' komutunu yazarak veya söyleyerek akıllı modu başlatın.");
+            }
+        }
+        
+        async function processAIRequest(userPrompt) {
+            commandDisplay.innerHTML = `<div class="flex items-center space-x-2"><div class="loader"></div><span>Yapay zeka isteğinizi işliyor...</span></div>`;
+
+            const apiKey = ""; 
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const currentDate = new Date().toISOString().split('T')[0];
+
+            const systemPrompt = `Sen bir veri analisti yapay zekasısın. Sana verilen CSV verisini ve kullanıcı isteğini analiz edeceksin. İsteğe göre veriyi işleyip, sonucu görselleştirmek için gereken JSON formatında bir cevap döneceksin.
+            
+            VERİ SÜTUNLARI: ${Object.keys(fullData[0] || {}).join(', ')}
+
+            JSON CEVAP FORMATI:
+            {
+              "action": "renderCard" | "renderPieChart" | "renderBarChart" | "renderTable" | "speakOnly" | "clear",
+              "speak": "Kullanıcıya sesli olarak söylenecek açıklama metni.",
+              "data": { ... eyleme özel veriler ... }
+            }
+
+            EYLEM DETAYLARI:
+            - renderCard: Tek bir sayısal değeri göstermek için. data: { "title": "...", "value": "...", "icon": "font-awesome-icon-kodu" }
+            - renderPieChart: Kategorik veri dağılımı için. data: { "labels": [...], "data": [...], "title": "..." }
+            - renderBarChart: Kategorileri karşılaştırmak için. data: { "labels": [...], "data": [...], "title": "..." }
+            - renderTable: Detaylı veri listesi için. data: { "headers": [...], "rows": [[...], ...], "title": "..." }
+            - clear: Ekranı temizlemek için.
+            - speakOnly: Görselleştirme gerekmediğinde veya istek anlaşılamadığında. data: null
+            
+            ÖNEMLİ: Sadece bu eylemleri kullanabilirsin. Cevabın SADECE JSON formatında olmalı, başka hiçbir metin içermemeli. Tarih içeren sorularda şu anki tarihin ${currentDate} olduğunu varsay.`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: `Veri:\n${loadedCsvText}\n\nKullanıcı İsteği: ${userPrompt}` }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: { responseMimeType: "application/json" }
+            };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) throw new Error(`API hatası: ${response.status}`);
+                
+                const result = await response.json();
+                const aiResponseText = result.candidates[0].content.parts[0].text;
+                const aiResponse = JSON.parse(aiResponseText);
+                
+                speak(aiResponse.speak, () => {
+                    commandDisplay.innerHTML = `<span class="text-green-400">Yapay Zeka:</span> <span class="text-white font-medium">"${aiResponse.speak}"</span>`;
+                    executeAIAction(aiResponse);
+                });
+
+            } catch (error) {
+                console.error("Yapay Zeka Hatası:", error);
+                const errorMessage = "Üzgünüm, bir hata oluştu ve isteğinizi işleyemedim. Lütfen tekrar deneyin.";
+                commandDisplay.textContent = errorMessage;
+                speak(errorMessage);
+            }
+        }
+
+        function executeAIAction(response) {
+            switch(response.action) {
+                case 'renderCard': renderCard(response.data); break;
+                case 'renderPieChart': renderPieChart(response.data); break;
+                case 'renderBarChart': renderBarChart(response.data); break;
+                case 'renderTable': renderTable(response.data); break;
+                case 'clear': clearDashboard(); renderWelcomeMessage(); break;
+                case 'speakOnly': break;
+                default: console.warn('Bilinmeyen eylem:', response.action);
+            }
+        }
+
+        function clearDashboard() {
+            dashboardContent.innerHTML = '';
+            if (chartInstance) {
+                chartInstance.destroy();
+                chartInstance = null;
+            }
+        }
+
+        function renderWelcomeMessage() {
+            const welcomeHtml = `<div id="welcome-message" class="md:col-span-2 lg:col-span-3 xl:col-span-4 text-center p-8 bg-gray-800 rounded-lg"> <i class="fas fa-info-circle fa-3x mb-4 text-blue-500"></i> <h2 class="text-xl font-semibold mb-2">Dashboard'a Hoş Geldiniz</h2> <p class="text-gray-400">"Açıl Susam Açıl" komutunu vererek akıllı modu başlatabilirsiniz.</p> </div>`;
+            dashboardContent.innerHTML = welcomeHtml;
+        }
+
+        function renderCard({ title, value, icon }) {
+            clearDashboard();
+            dashboardContent.innerHTML = `<div class="md:col-span-2 lg:col-span-3 xl:col-span-4 bg-gray-800 p-6 rounded-lg shadow-lg flex flex-col items-center justify-center text-center"> <i class="fas ${icon} fa-3x text-blue-500 mb-4"></i> <h3 class="text-lg font-semibold text-gray-400">${title}</h3> <p class="text-4xl font-bold text-white">${value}</p> </div>`;
+        }
+
+        function renderPieChart({ labels, data, title }) {
+            clearDashboard();
+            dashboardContent.innerHTML = `<div class="md:col-span-2 lg:col-span-3 xl:col-span-4 bg-gray-800 p-6 rounded-lg shadow-lg"><canvas id="myChart"></canvas></div>`;
+            const ctx = document.getElementById('myChart').getContext('2d');
+            chartInstance = new Chart(ctx, {
+                type: 'pie', data: { labels, datasets: [{ data, backgroundColor: ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'], borderColor: '#1f2937' }] },
+                options: { responsive: true, plugins: { legend: { position: 'top', labels: { color: '#e5e7eb' } }, title: { display: true, text: title, color: '#e5e7eb', font: { size: 18 } } } }
+            });
+        }
+        
+        function renderBarChart({ labels, data, title }) {
+            clearDashboard();
+            dashboardContent.innerHTML = `<div class="md:col-span-2 lg:col-span-3 xl:col-span-4 bg-gray-800 p-6 rounded-lg shadow-lg"><canvas id="myChart"></canvas></div>`;
+            const ctx = document.getElementById('myChart').getContext('2d');
+            chartInstance = new Chart(ctx, {
+                type: 'bar', data: { labels, datasets: [{ label: 'Değer', data, backgroundColor: 'rgba(59, 130, 246, 0.5)', borderColor: 'rgba(59, 130, 246, 1)', borderWidth: 1 }] },
+                options: { scales: { y: { beginAtZero: true, ticks: { color: '#9ca3af' }, grid: { color: '#374151' } }, x: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } } }, plugins: { legend: { display: false }, title: { display: true, text: title, color: '#e5e7eb', font: { size: 18 } } } }
+            });
+        }
+        
+        function renderTable({ headers, rows, title }) {
+            clearDashboard();
+            dashboardContent.innerHTML = `<div class="md:col-span-2 lg:col-span-3 xl:col-span-4 bg-gray-800 p-6 rounded-lg shadow-lg overflow-x-auto"> <h3 class="text-xl font-semibold mb-4 text-white">${title}</h3> <table class="w-full text-sm text-left text-gray-400"> <thead class="text-xs text-gray-300 uppercase bg-gray-700">${headers.map(h => `<th scope="col" class="px-6 py-3">${h}</th>`).join('')}</thead> <tbody>${rows.map(row => `<tr class="bg-gray-800 border-b border-gray-700 hover:bg-gray-600">${row.map(cell => `<td class="px-6 py-4">${cell}</td>`).join('')}</tr>`).join('')}</tbody> </table> </div>`;
+        }
+
+        window.onload = () => {
+            fetch('data.csv')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Veri dosyası bulunamadı (HTTP ' + response.status + ')');
+                    }
+                    return response.text();
+                })
+                .then(csvText => {
+                    loadedCsvText = csvText;
+                    parseCSV(loadedCsvText);
+                })
+                .catch(error => {
+                    console.error('Veri yükleme hatası:', error);
+                    dashboardContent.innerHTML = `<div class="md:col-span-2 lg:col-span-3 xl:col-span-4 text-center p-8 bg-gray-800 border-2 border-red-500 rounded-lg">
+                                                    <i class="fas fa-exclamation-triangle fa-3x mb-4 text-red-500"></i>
+                                                    <h2 class="text-xl font-semibold mb-2 text-white">Veri Yüklenemedi</h2>
+                                                    <p class="text-gray-400">Lütfen 'data.csv' dosyasının index.html ile aynı dizinde olduğundan emin olun.</p>
+                                                  </div>`;
+                    commandDisplay.innerHTML = `<span class="text-red-400">Hata: 'data.csv' dosyası bulunamadı.</span>`;
+                    cliInput.disabled = true;
+                    listenBtn.disabled = true;
+                });
+        };
+    </script>
+</body>
+</html>
+
